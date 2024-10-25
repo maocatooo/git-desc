@@ -1,6 +1,6 @@
 module github.com/maocatooo/git-desc
 
-go 1.21.6
+go 1.21
 
 require (
 	github.com/charmbracelet/bubbles v0.18.0

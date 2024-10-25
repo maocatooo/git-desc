@@ -1,34 +1,46 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"strings"
+
+	"github.com/fzdwx/infinite/color"
+	"github.com/fzdwx/infinite/style"
 )
 
 const descPath = ".git_desc"
 
-func branch(all bool) (string, []string) {
+var usedColor = color.Pink
+
+func branch(all bool) (string, int, []string) {
 	cmd := "git branch"
 	if all {
 		cmd = "git branch -a"
 	}
 	b, _ := execCmd(cmd)
 	if b == "" {
-		return "", nil
+		return "", 0, nil
 	}
-	bs := strings.Split(b, "\n")
-	current := ""
-	for index, item := range bs {
+	allBranch := strings.Split(b, "\n")
+	currentBranch := ""
+	currentIndex := 0
+	maxLen := 0
+	for index, item := range allBranch {
 		branch := strings.TrimSpace(item)
 		if strings.HasPrefix(item, "*") {
 			branch = strings.Trim(branch, "* ")
-			current = branch
+			currentBranch = branch
+			currentIndex = index
 		}
-		bs[index] = branch
+		allBranch[index] = branch
+		maxLen = max(maxLen, len(branch))
 	}
-	return current, bs
+	// currentBranch into top
+	allBranch[0], allBranch[currentIndex] = allBranch[currentIndex], allBranch[0]
+	return currentBranch, maxLen, allBranch
 }
 
 func current() string {
@@ -39,23 +51,50 @@ func current() string {
 	return b
 }
 
-func create(ls *List, args ...string) {
-	if len(args) == 1 {
-		b := current()
-		ls.Append([]string{b, args[0]})
-		ls.Save()
-	} else if len(args) > 1 {
-		ls.Append([]string{args[0], args[1]})
-		ls.Save()
+func toInfo(args []string) *info {
+	var i = &info{}
+	c := []string{}
+	l := []string{}
+	m := 0
+	for _, arg := range args {
+		switch arg {
+		case "-c":
+			m = 1
+			i.setD = true
+		case "-l":
+			i.setL = true
+			m = 2
+		default:
+			if m == 1 {
+				c = append(c, arg)
+			}
+			if m == 2 {
+				l = append(l, arg)
+			}
+		}
 	}
+
+	if len(c) > 1 {
+		i.Branch = c[0]
+		i.Desc = strings.Join(c[1:], " ")
+	} else {
+		i.Branch = current()
+		i.Desc = strings.Join(c, " ")
+	}
+	i.Link = strings.Join(l, " ")
+	return i
+}
+
+func create(ls *List, args ...string) {
+	ls.Append(toInfo(args))
+	ls.Save()
 }
 
 func show_local(ls *List) {
-	current, localBs := branch(false)
-	ls.LS(current, localBs)
+	ls.LS(branch(false))
 }
 
-func get_desc_file_path(dir string) *List {
+func getDescFilePath(dir string) *List {
 	filePath := path.Join(dir, descPath)
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
@@ -67,7 +106,7 @@ func get_desc_file_path(dir string) *List {
 		defer file.Close()
 		return &List{
 			filePath: filePath,
-			Data:     [][]string{},
+			Data:     nil,
 		}
 	} else if err != nil {
 		panic(err)
@@ -76,40 +115,58 @@ func get_desc_file_path(dir string) *List {
 	if err != nil {
 		panic(err)
 	}
-	lines := strings.Split(string(bs), "\n")
-	data := [][]string{}
 
-	for _, line := range lines {
-		s := strings.Split(line, " ")
-		if len(s) != 2 {
-			continue
-		}
-		data = append(data, s)
-	}
+	var infos []*info
+
+	_ = json.Unmarshal(bs, &infos)
+
 	return &List{
 		filePath: filePath,
-		Data:     data,
+		Data:     infos,
 	}
 }
 
+type info struct {
+	Branch string `json:"b"`
+
+	setD bool
+	Desc string `json:"d"`
+
+	setL bool
+	Link string `json:"l"`
+}
 type List struct {
 	filePath string
-	Data     [][]string
+	Data     []*info
 }
 
 func (l *List) ShowInfo(s string) string {
 	for _, item := range l.Data {
-		if item[0] == s {
-			fmt.Println(item[0], "\t", item[1])
+		if item.Branch == s {
+			fmt.Println(item.Branch, "\t", item.Desc)
 		}
 	}
 	return ""
 }
-
-func (l *List) Append(s []string) {
+func (l *List) Current() *info {
+	c := current()
 	for _, item := range l.Data {
-		if item[0] == s[0] {
-			item[1] = s[1]
+		if item.Branch == c {
+			return item
+		}
+	}
+	return nil
+}
+
+func (l *List) Append(s *info) {
+	for _, item := range l.Data {
+		if item.Branch == s.Branch {
+			if s.setD {
+				item.Desc = s.Desc
+			}
+			if s.setL {
+				item.Link = s.Link
+			}
 			return
 		}
 	}
@@ -123,60 +180,59 @@ func (l *List) Save() {
 
 	}
 	defer file.Close()
-	for _, item := range l.Data {
-		_, err = file.WriteString(fmt.Sprint(item[0], " ", item[1], "\n"))
-		if err != nil {
-			panic(err)
-		}
-	}
+
+	bs, _ := json.Marshal(l.Data)
+	file.Write(bs)
 }
 
-func (l *List) roll(current string, all []string, f func(bool, int, string, string)) {
-	maxLen := 0
-	mp := map[string]string{}
+func (l *List) roll(current string, maxLen int, all []string, f func(bool, int, string, *info)) {
+	mp := map[string]*info{}
 	for _, item := range l.Data {
-		mp[item[0]] = item[1]
-	}
-	for _, item := range all {
-		desc := mp[item]
-		if maxLen < len(item) {
-			maxLen = len(item)
-		}
-		defer func(item string) {
-			f(item == current, maxLen, item, desc)
-		}(item)
+		mp[item.Branch] = item
 	}
 	maxLen += 3
+	for _, item := range all {
+		inf := mp[item]
+		if inf == nil {
+			inf = &info{
+				Branch: item,
+			}
+		}
+		f(item == current, maxLen, item, inf)
+	}
 }
 
-func (l *List) LS(current string, all []string) {
-	l.roll(current, all, func(isCurrent bool, maxLen int, item, desc string) {
-
+func (l *List) LS(current string, maxLen int, all []string) {
+	maxLen = maxLen + 3
+	l.roll(current, maxLen, all, func(isCurrent bool, maxLen int, item string, inf *info) {
+		i := "   " + item
 		if isCurrent {
 			item = " * " + item
-			fmt.Printf("\033[32m%-*s\033[0m  %s\n", maxLen, item, desc)
+			i = style.New().Fg(usedColor).Render(fmt.Sprintf("%-*s", maxLen, item))
 		} else {
-			item = "   " + item
-			fmt.Printf("%-*s  %s\n", maxLen, item, desc)
+			i = fmt.Sprintf("%-*s", maxLen, i)
 		}
-
+		desc := inf.Desc
+		fmt.Printf("%s  %s\n", i, desc)
 	})
 }
 
-func (l *List) options(current string, all []string) ([]string, map[string]string) {
+func (l *List) options(current string, maxLen int, all []string) ([]string, map[string]*info) {
 
 	var (
 		opts []string
-		mp   = map[string]string{}
+		mp   = map[string]*info{}
 	)
-
-	l.roll(current, all, func(isCurrent bool, maxLen int, item, desc string) {
-		opt := "   " + item + "  " + desc
+	maxLen = maxLen + 3
+	l.roll(current, maxLen, all, func(isCurrent bool, maxLen int, item string, inf *info) {
+		opt := "   "
 		if isCurrent {
-			opt = " * " + item + "  " + desc
+			opt = " * "
 		}
+		desc := inf.Desc
+		opt = fmt.Sprintf("%-*s  %s", maxLen, opt+item, desc)
 		opts = append(opts, opt)
-		mp[opt] = item
+		mp[opt] = inf
 	})
 	return opts, mp
 }
