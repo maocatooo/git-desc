@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/fzdwx/infinite/components/selection/singleselect"
@@ -16,10 +17,19 @@ func selection(ls *List, args ...string) *info {
 		return nil
 	}
 	if len(args) > 0 {
+		options = []string{}
+		var c *info
 		for _, item := range mp {
 			if item.Branch == args[0] {
 				return item
 			}
+			if strings.Contains(item.Branch, args[0]) {
+				options = append(options, item.Branch)
+				c = item
+			}
+		}
+		if len(options) == 1 {
+			return c
 		}
 	}
 
